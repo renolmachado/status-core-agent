@@ -26,6 +26,7 @@ fn pm2_binary() -> &'static str {
             }
         }
 
+        eprintln!("[pm2] Termux PM2 not found, falling back to system PATH");
         "pm2".to_string()
     })
 }
@@ -33,17 +34,25 @@ fn pm2_binary() -> &'static str {
 pub async fn collect_pm2() -> Vec<Pm2Process> {
     match run_pm2_jlist().await {
         Ok(processes) => processes,
-        Err(_) => Vec::new(),
+        Err(e) => {
+            eprintln!("[pm2] Error running '{}': {}", pm2_binary(), e);
+            Vec::new()
+        }
     }
 }
 
 async fn run_pm2_jlist() -> Result<Vec<Pm2Process>, Box<dyn std::error::Error>> {
-    let output = Command::new(pm2_binary())
+    let bin = pm2_binary();
+    eprintln!("[pm2] Running: {} jlist", bin);
+
+    let output = Command::new(bin)
         .arg("jlist")
         .output()
         .await?;
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("[pm2] Command failed (exit {}): {}", output.status, stderr);
         return Ok(Vec::new());
     }
 
