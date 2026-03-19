@@ -44,7 +44,8 @@ async fn main() {
             }
             db::insert_metrics(&collector_db, &metrics);
             eprintln!(
-                "[collector] CPU: {:.1}% | RAM: {}/{} MB | Temp: {:.1}°C | PM2: {} procs",
+                "[collector] CPU: {:.1}% (avg {:.2}) | RAM: {}/{} MB | Temp: {:.1}°C | PM2: {} procs",
+                metrics.cpu_usage,
                 metrics.cpu_load_avg,
                 metrics.ram_used / 1_048_576,
                 metrics.ram_total / 1_048_576,

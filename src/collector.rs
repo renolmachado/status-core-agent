@@ -9,6 +9,8 @@ pub async fn collect_metrics() -> ServerMetrics {
     std::thread::sleep(std::time::Duration::from_millis(200));
     sys.refresh_all();
 
+    let cpu_usage = sys.global_cpu_usage();
+
     let cpu_load_avg = {
         let load = System::load_average();
         load.one as f32
@@ -25,6 +27,7 @@ pub async fn collect_metrics() -> ServerMetrics {
 
     ServerMetrics {
         timestamp: Utc::now().timestamp(),
+        cpu_usage,
         cpu_load_avg,
         cpu_cores_online,
         ram_used,

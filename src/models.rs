@@ -12,6 +12,7 @@ pub struct Pm2Process {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerMetrics {
     pub timestamp: i64,
+    pub cpu_usage: f32,
     pub cpu_load_avg: f32,
     pub cpu_cores_online: usize,
     pub ram_used: u64,
@@ -25,6 +26,7 @@ impl ServerMetrics {
     pub fn default_empty() -> Self {
         Self {
             timestamp: 0,
+            cpu_usage: 0.0,
             cpu_load_avg: 0.0,
             cpu_cores_online: 0,
             ram_used: 0,
