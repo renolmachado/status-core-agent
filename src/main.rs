@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 
-const COLLECT_INTERVAL_SECS: u64 = 30;
+const COLLECT_INTERVAL_SECS: u64 = 15;
 const CLEANUP_INTERVAL_SECS: u64 = 86400; // 24h
 const RETENTION_DAYS: u64 = 7;
 const DB_PATH: &str = "metrics.db";
@@ -30,27 +30,34 @@ async fn main() {
         db: db_pool.clone(),
     };
 
-    // Collector loop: every 30s
     let collector_current = current.clone();
     let collector_db = db_pool.clone();
     tokio::spawn(async move {
+        let mut col = collector::Collector::new();
         let mut tick = interval(Duration::from_secs(COLLECT_INTERVAL_SECS));
         loop {
             tick.tick().await;
-            let metrics = collector::collect_metrics().await;
+            let m = col.collect().await;
             {
                 let mut w = collector_current.write().await;
-                *w = metrics.clone();
+                *w = m.clone();
             }
-            db::insert_metrics(&collector_db, &metrics);
+            db::insert_metrics(&collector_db, &m);
             eprintln!(
-                "[collector] CPU: {:.1}% (avg {:.2}) | RAM: {}/{} MB | Temp: {:.1}°C | PM2: {} procs",
-                metrics.cpu_usage,
-                metrics.cpu_load_avg,
-                metrics.ram_used / 1_048_576,
-                metrics.ram_total / 1_048_576,
-                metrics.temp_celsius,
-                metrics.pm2_processes.len()
+                "[collector] HP:{} | CPU:{:.1}% avg{:.2} cores {}/{} | RAM:{}/{}M | Swap:{}/{}M | Disk:{}/{}G | {:.1}°C | PM2:{}",
+                m.health_score,
+                m.cpu_usage,
+                m.cpu_load_avg,
+                m.cpu_cores_online,
+                m.cpu_cores_total,
+                m.ram_used / 1_048_576,
+                m.ram_total / 1_048_576,
+                m.swap_used / 1_048_576,
+                m.swap_total / 1_048_576,
+                m.disk_available / 1_073_741_824,
+                m.disk_total / 1_073_741_824,
+                m.temp_celsius,
+                m.pm2_processes.len()
             );
         }
     });
