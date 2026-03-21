@@ -25,7 +25,7 @@ The binary will be at `target/release/status-core-agent`.
 ./target/release/status-core-agent
 ```
 
-The agent starts on `0.0.0.0:3456` by default. SQLite database is stored as `metrics.db` in the working directory.
+The agent starts on `0.0.0.0:3002` by default. SQLite database is stored as `metrics.db` in the working directory.
 
 ## API Endpoints
 
@@ -100,7 +100,7 @@ Constants are defined in `src/main.rs`:
 | `CLEANUP_INTERVAL_SECS` | 86400 | Cleanup interval (24h) |
 | `RETENTION_DAYS` | 7 | Days to keep history |
 | `DB_PATH` | `metrics.db` | SQLite database path |
-| `LISTEN_ADDR` | `0.0.0.0:3456` | HTTP listen address |
+| `LISTEN_ADDR` | `0.0.0.0:3002` | HTTP listen address |
 
 ## Architecture
 

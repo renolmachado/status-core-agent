@@ -14,7 +14,7 @@ const COLLECT_INTERVAL_SECS: u64 = 15;
 const CLEANUP_INTERVAL_SECS: u64 = 86400; // 24h
 const RETENTION_DAYS: u64 = 7;
 const DB_PATH: &str = "metrics.db";
-const LISTEN_ADDR: &str = "0.0.0.0:3456";
+const LISTEN_ADDR: &str = "0.0.0.0:3002";
 
 #[tokio::main]
 async fn main() {
