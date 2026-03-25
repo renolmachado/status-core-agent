@@ -6,15 +6,76 @@ mod pm2;
 
 use api::AppState;
 use models::ServerMetrics;
+use std::env;
+use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
+use tokio::net::TcpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, Duration};
 
 const COLLECT_INTERVAL_SECS: u64 = 15;
 const CLEANUP_INTERVAL_SECS: u64 = 86400; // 24h
 const RETENTION_DAYS: u64 = 7;
 const DB_PATH: &str = "metrics.db";
-const LISTEN_ADDR: &str = "0.0.0.0:3002";
+const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3002";
+/// Retries when the port is still in TIME_WAIT or the old PID has not released yet.
+const BIND_RETRIES: u32 = 30;
+const BIND_RETRY_DELAY_MS: u64 = 1000;
+
+fn listen_addr_from_env() -> String {
+    env::var("STATUS_CORE_LISTEN")
+        .or_else(|_| env::var("LISTEN_ADDR"))
+        .unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string())
+}
+
+fn bind_listener(addr: SocketAddr) -> Result<tokio::net::TcpListener, std::io::Error> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(1024)
+}
+
+async fn bind_with_retries(addr_str: &str) -> tokio::net::TcpListener {
+    let addr = SocketAddr::from_str(addr_str).unwrap_or_else(|e| {
+        eprintln!(
+            "[status-core-agent] Invalid listen address {:?}: {}",
+            addr_str, e
+        );
+        std::process::exit(1);
+    });
+
+    for attempt in 1..=BIND_RETRIES {
+        match bind_listener(addr) {
+            Ok(listener) => return listener,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AddrInUse && attempt < BIND_RETRIES =>
+            {
+                eprintln!(
+                    "[status-core-agent] Address in use (try {}/{}), retrying in {} ms — {}",
+                    attempt, BIND_RETRIES, BIND_RETRY_DELAY_MS, e
+                );
+                sleep(Duration::from_millis(BIND_RETRY_DELAY_MS)).await;
+            }
+            Err(e) => {
+                eprintln!(
+                    "[status-core-agent] Failed to bind {}: {}",
+                    addr_str, e
+                );
+                eprintln!(
+                    "[status-core-agent] Hint: another process holds this port, or PM2 started a second copy. Check `pm2 list`, stop duplicates, or set STATUS_CORE_LISTEN (e.g. 0.0.0.0:3003)."
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    unreachable!("bind_with_retries always returns or exits");
+}
 
 #[tokio::main]
 async fn main() {
@@ -86,10 +147,9 @@ async fn main() {
 
     let router = api::build_router(state);
 
-    eprintln!("[status-core-agent] Listening on {}", LISTEN_ADDR);
-    let listener = tokio::net::TcpListener::bind(LISTEN_ADDR)
-        .await
-        .expect("Failed to bind to address");
+    let listen_addr = listen_addr_from_env();
+    eprintln!("[status-core-agent] Listening on {}", listen_addr);
+    let listener = bind_with_retries(&listen_addr).await;
 
     axum::serve(listener, router)
         .await
