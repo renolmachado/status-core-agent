@@ -53,7 +53,6 @@ pub async fn collect_pm2() -> Vec<Pm2Process> {
 
 async fn run_pm2_jlist() -> Result<Vec<Pm2Process>, Box<dyn std::error::Error>> {
     let cfg = pm2_config();
-    eprintln!("[pm2] Running: {} jlist", cfg.bin);
 
     let mut cmd = Command::new(&cfg.bin);
     cmd.arg("jlist");

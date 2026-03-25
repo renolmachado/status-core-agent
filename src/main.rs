@@ -37,28 +37,36 @@ async fn main() {
         let mut tick = interval(Duration::from_secs(COLLECT_INTERVAL_SECS));
         loop {
             tick.tick().await;
-            let m = col.collect().await;
+            let (m, log_now) = col.collect().await;
             {
                 let mut w = collector_current.write().await;
                 *w = m.clone();
             }
-            db::insert_metrics(&collector_db, &m);
-            eprintln!(
-                "[collector] HP:{} | CPU:{:.1}% avg{:.2} cores {}/{} | RAM:{}/{}M | Swap:{}/{}M | Disk:{}/{}G | {:.1}°C | PM2:{}",
-                m.health_score,
-                m.cpu_usage,
-                m.cpu_load_avg,
-                m.cpu_cores_online,
-                m.cpu_cores_total,
-                m.ram_used / 1_048_576,
-                m.ram_total / 1_048_576,
-                m.swap_used / 1_048_576,
-                m.swap_total / 1_048_576,
-                m.disk_available / 1_073_741_824,
-                m.disk_total / 1_073_741_824,
-                m.temp_celsius,
-                m.pm2_processes.len()
-            );
+            let db = collector_db.clone();
+            let m_db = m.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                db::insert_metrics(&db, &m_db);
+            })
+            .await;
+
+            if log_now {
+                eprintln!(
+                    "[collector] HP:{} | CPU:{:.1}% avg{:.2} cores {}/{} | RAM:{}/{}M | Swap:{}/{}M | Disk:{}/{}G | {:.1}°C | PM2:{}",
+                    m.health_score,
+                    m.cpu_usage,
+                    m.cpu_load_avg,
+                    m.cpu_cores_online,
+                    m.cpu_cores_total,
+                    m.ram_used / 1_048_576,
+                    m.ram_total / 1_048_576,
+                    m.swap_used / 1_048_576,
+                    m.swap_total / 1_048_576,
+                    m.disk_available / 1_073_741_824,
+                    m.disk_total / 1_073_741_824,
+                    m.temp_celsius,
+                    m.pm2_processes.len()
+                );
+            }
         }
     });
 
@@ -68,7 +76,11 @@ async fn main() {
         let mut tick = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
         loop {
             tick.tick().await;
-            db::cleanup_old(&cleanup_db, RETENTION_DAYS);
+            let db = cleanup_db.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                db::cleanup_old(&db, RETENTION_DAYS);
+            })
+            .await;
         }
     });
 

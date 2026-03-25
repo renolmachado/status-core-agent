@@ -43,6 +43,10 @@ async fn get_history(
     State(state): State<AppState>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Vec<ServerMetrics>>, StatusCode> {
-    let history = db::get_history(&state.db, params.hours);
+    let db = state.db.clone();
+    let hours = params.hours;
+    let history = tokio::task::spawn_blocking(move || db::get_history(&db, hours))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(history))
 }
