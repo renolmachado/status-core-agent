@@ -1,4 +1,4 @@
-use crate::models::ServerMetrics;
+use crate::models::{Pm2Process, ServerMetrics};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use std::sync::{Arc, Mutex};
@@ -9,26 +9,87 @@ pub fn init_db(path: &str) -> DbPool {
     let conn = Connection::open(path).expect("Failed to open SQLite database");
 
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS history (
+        "PRAGMA journal_mode=WAL;
+        PRAGMA synchronous=NORMAL;
+        PRAGMA temp_store=MEMORY;
+        PRAGMA busy_timeout=3000;
+        CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER NOT NULL,
             data TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_timestamp ON history(timestamp);",
+        CREATE INDEX IF NOT EXISTS idx_timestamp ON history(timestamp);
+        CREATE TABLE IF NOT EXISTS pm2_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pm2_timestamp ON pm2_history(timestamp);",
     )
     .expect("Failed to create schema");
 
     Arc::new(Mutex::new(conn))
 }
 
-pub fn insert_metrics(db: &DbPool, metrics: &ServerMetrics) {
-    let json = serde_json::to_string(metrics).expect("Failed to serialize metrics");
+fn metrics_without_pm2(metrics: &ServerMetrics) -> ServerMetrics {
+    let mut compact = metrics.clone();
+    compact.pm2_processes.clear();
+    compact
+}
+
+pub fn insert_metrics_batch(db: &DbPool, metrics_list: &[ServerMetrics]) {
+    if metrics_list.is_empty() {
+        return;
+    }
+
     let conn = db.lock().expect("DB lock poisoned");
-    conn.execute(
-        "INSERT INTO history (timestamp, data) VALUES (?1, ?2)",
-        params![metrics.timestamp, json],
-    )
-    .ok();
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[db] Failed to start transaction: {}", e);
+            return;
+        }
+    };
+
+    for metrics in metrics_list {
+        let compact = metrics_without_pm2(metrics);
+        let json = match serde_json::to_string(&compact) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[db] Failed to serialize metrics: {}", e);
+                continue;
+            }
+        };
+
+        if let Err(e) = tx.execute(
+            "INSERT INTO history (timestamp, data) VALUES (?1, ?2)",
+            params![metrics.timestamp, json],
+        ) {
+            eprintln!("[db] Failed to insert history row: {}", e);
+        }
+    }
+
+    if let Err(e) = tx.commit() {
+        eprintln!("[db] Failed to commit history batch: {}", e);
+    }
+}
+
+pub fn insert_pm2_snapshot(db: &DbPool, timestamp: i64, pm2: &[Pm2Process]) {
+    let json = match serde_json::to_string(pm2) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[db] Failed to serialize PM2 snapshot: {}", e);
+            return;
+        }
+    };
+
+    let conn = db.lock().expect("DB lock poisoned");
+    if let Err(e) = conn.execute(
+        "INSERT INTO pm2_history (timestamp, data) VALUES (?1, ?2)",
+        params![timestamp, json],
+    ) {
+        eprintln!("[db] Failed to insert PM2 snapshot: {}", e);
+    }
 }
 
 pub fn get_history(db: &DbPool, hours: u64) -> Vec<ServerMetrics> {
@@ -56,11 +117,18 @@ pub fn get_history(db: &DbPool, hours: u64) -> Vec<ServerMetrics> {
 pub fn cleanup_old(db: &DbPool, days: u64) {
     let cutoff = Utc::now().timestamp() - (days as i64 * 86400);
     let conn = db.lock().expect("DB lock poisoned");
-    let deleted = conn
+    let deleted_history = conn
         .execute("DELETE FROM history WHERE timestamp < ?1", params![cutoff])
         .unwrap_or(0);
+    let deleted_pm2 = conn
+        .execute("DELETE FROM pm2_history WHERE timestamp < ?1", params![cutoff])
+        .unwrap_or(0);
 
+    let deleted = deleted_history + deleted_pm2;
     if deleted > 0 {
-        eprintln!("[db] Cleaned up {} old records (>{} days)", deleted, days);
+        eprintln!(
+            "[db] Cleaned up {} old records (>{} days)",
+            deleted, days
+        );
     }
 }

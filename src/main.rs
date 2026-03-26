@@ -5,19 +5,22 @@ mod models;
 mod pm2;
 
 use api::AppState;
-use models::ServerMetrics;
+use models::{Pm2Process, ServerMetrics};
 use std::env;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, sleep, Duration, Instant};
 
 const COLLECT_INTERVAL_SECS: u64 = 60;
+const PM2_REFRESH_INTERVAL_SECS: u64 = 300;
 const CLEANUP_INTERVAL_SECS: u64 = 86400; // 24h
 const RETENTION_DAYS: u64 = 7;
 const DB_PATH: &str = "metrics.db";
+const DB_BATCH_SIZE: usize = 5;
+const DB_FLUSH_INTERVAL_SECS: u64 = 300;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:3002";
 /// Retries when the port is still in TIME_WAIT or the old PID has not released yet.
 const BIND_RETRIES: u32 = 30;
@@ -85,30 +88,65 @@ async fn main() {
     db::cleanup_old(&db_pool, RETENTION_DAYS);
 
     let current = Arc::new(RwLock::new(ServerMetrics::default_empty()));
+    let pm2_cache = Arc::new(RwLock::new(Vec::<Pm2Process>::new()));
 
     let state = AppState {
         current: current.clone(),
         db: db_pool.clone(),
     };
 
+    // PM2 collector loop: refresh less frequently and cache results.
+    let pm2_state = pm2_cache.clone();
+    let pm2_db = db_pool.clone();
+    tokio::spawn(async move {
+        let mut tick = interval(Duration::from_secs(PM2_REFRESH_INTERVAL_SECS));
+        loop {
+            tick.tick().await;
+            let pm2_list = pm2::collect_pm2().await;
+            {
+                let mut w = pm2_state.write().await;
+                *w = pm2_list.clone();
+            }
+            let db = pm2_db.clone();
+            let snapshot = pm2_list.clone();
+            let ts = chrono::Utc::now().timestamp();
+            let _ = tokio::task::spawn_blocking(move || {
+                db::insert_pm2_snapshot(&db, ts, &snapshot);
+            })
+            .await;
+        }
+    });
+
     let collector_current = current.clone();
+    let collector_pm2 = pm2_cache.clone();
     let collector_db = db_pool.clone();
     tokio::spawn(async move {
         let mut col = collector::Collector::new();
         let mut tick = interval(Duration::from_secs(COLLECT_INTERVAL_SECS));
+        let mut buffer: Vec<ServerMetrics> = Vec::with_capacity(DB_BATCH_SIZE);
+        let mut last_flush = Instant::now();
         loop {
             tick.tick().await;
-            let (m, log_now) = col.collect().await;
+            let pm2_list = collector_pm2.read().await.clone();
+            let (m, log_now) = col.collect(pm2_list).await;
             {
                 let mut w = collector_current.write().await;
                 *w = m.clone();
             }
-            let db = collector_db.clone();
-            let m_db = m.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                db::insert_metrics(&db, &m_db);
-            })
-            .await;
+            buffer.push(m.clone());
+
+            let flush_due =
+                buffer.len() >= DB_BATCH_SIZE
+                    || last_flush.elapsed() >= Duration::from_secs(DB_FLUSH_INTERVAL_SECS);
+            if flush_due {
+                let db = collector_db.clone();
+                let batch = std::mem::take(&mut buffer);
+                last_flush = Instant::now();
+                let _ = tokio::task::spawn_blocking(move || {
+                    db::insert_metrics_batch(&db, &batch);
+                })
+                .await;
+            }
 
             if log_now {
                 eprintln!(

@@ -1,13 +1,9 @@
 use crate::models::{Pm2Process, ServerMetrics};
-use crate::pm2;
 use chrono::Utc;
 use std::path::Path;
 use sysinfo::{Components, Disks, System};
 
-
-const PM2_EVERY_N_COLLECTS: u32 = 2;
-
-/// Full disk / thermal / battery refresh every N collects (~60s at 15s tick).
+/// Full disk / thermal / battery refresh every N collects (~4 min at 60s tick).
 const SLOW_EVERY_N_COLLECTS: u32 = 4;
 
 pub struct Collector {
@@ -16,7 +12,6 @@ pub struct Collector {
     disks: Disks,
     cpu_cores_total: usize,
     collect_count: u32,
-    pm2_cache: Vec<Pm2Process>,
     slow_temp: f32,
     slow_disk: (u64, u64),
     slow_battery: u8,
@@ -40,7 +35,6 @@ impl Collector {
             disks,
             cpu_cores_total,
             collect_count: 0,
-            pm2_cache: Vec::new(),
             slow_temp: 0.0,
             slow_disk: (0, 0),
             slow_battery: 0,
@@ -48,12 +42,11 @@ impl Collector {
     }
 
     /// Second value is `true` when a full slow refresh ran; use to throttle info logs.
-    pub async fn collect(&mut self) -> (ServerMetrics, bool) {
+    pub async fn collect(&mut self, pm2_processes: Vec<Pm2Process>) -> (ServerMetrics, bool) {
         self.collect_count = self.collect_count.wrapping_add(1);
         let n = self.collect_count;
 
         let slow_refresh = n == 1 || (n - 1) % SLOW_EVERY_N_COLLECTS == 0;
-        let pm2_refresh = n == 1 || (n - 1) % PM2_EVERY_N_COLLECTS == 0;
 
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
@@ -78,14 +71,6 @@ impl Collector {
         let (disk_available, disk_total) = self.slow_disk;
         let temp_celsius = self.slow_temp;
         let battery_level = self.slow_battery;
-
-        let pm2_processes = if pm2_refresh {
-            let p = pm2::collect_pm2().await;
-            self.pm2_cache = p.clone();
-            p
-        } else {
-            self.pm2_cache.clone()
-        };
 
         let health_score = compute_health_score(temp_celsius, ram_used, ram_total);
 
