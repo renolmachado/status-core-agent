@@ -14,7 +14,7 @@ use tokio::net::TcpSocket;
 use tokio::sync::RwLock;
 use tokio::time::{interval, sleep, Duration};
 
-const COLLECT_INTERVAL_SECS: u64 = 15;
+const COLLECT_INTERVAL_SECS: u64 = 60;
 const CLEANUP_INTERVAL_SECS: u64 = 86400; // 24h
 const RETENTION_DAYS: u64 = 7;
 const DB_PATH: &str = "metrics.db";
